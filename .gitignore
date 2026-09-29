@@ -1,20 +1,44 @@
-# Node.js / React
-/frontend/node_modules
-/frontend/build
 .env
-
-
-# Python / Flask
-/backend/venv
-*.pyc
-__pycache__/
-
-# OS Files
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
 .DS_Store
-Thumbs.db
-
-# Build directories
-/frontend/build
-/backend/venv
-*.pyc
+.local-backups/
+.superpowers/
+.venv/
+venv/
+node_modules/
+dist/
 __pycache__/
+*.pyc
+.pytest_cache/
+backend/vectorstores/
+backend/processed_data/
+backend/data/
+backend/test.txt
+Courses/
+Courses.zip
+*.pdf
+*.docx
+*.zip
+test-results/
+playwright-report/
+docs/screenshots/*
+!docs/screenshots/landing-desktop.png
+!docs/screenshots/landing-mobile.png
+!docs/screenshots/dashboard-desktop.png
+!docs/screenshots/sourced-answer.png
+!docs/screenshots/quiz-review.png
+!docs/screenshots/workspace-1440.png
+!docs/screenshots/workspace-768.png
+!docs/screenshots/workspace-375.png
+
+# Legacy local reference material (kept outside the portfolio repository)
+INTUILEARN_CODEX_INSTRUCTIONS*.md
+DATABASE_LOGO.png
+ERD.svg
+FINAL_RAG_PIPELINE.png
+RAG_GOOGLE_PHOTOS.png
+ragexplainer*.png

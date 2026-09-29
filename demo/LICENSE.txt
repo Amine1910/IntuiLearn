@@ -1,0 +1,3 @@
+The Distributed Systems demonstration text in this directory was created for IntuiLearn.
+It may be used, copied, modified, and distributed with attribution to IntuiLearn under CC0 1.0 (public domain dedication); attribution is appreciated but not required.
+These terms do not apply to the separate private course originals in Courses/.

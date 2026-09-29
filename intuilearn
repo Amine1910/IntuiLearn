@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+BACKEND="$ROOT/backend"
+FRONTEND="$ROOT/educrafters-guide"
+
+usage() {
+  printf '%s\n' \
+    'IntuiLearn local runner' \
+    '' \
+    '  ./intuilearn setup     Install dependencies and create local env files' \
+    '  ./intuilearn configure Save fresh Supabase and Gemini values securely' \
+    '  ./intuilearn doctor    Check whether live configuration is ready' \
+    '  ./intuilearn ingest    Build both indexes for the bundled demo course' \
+    '  ./intuilearn start     Start the API and frontend for a live walkthrough' \
+    '  ./intuilearn check     Run backend, frontend, and browser verification' \
+    '  ./intuilearn e2e       Run the deterministic browser suite only'
+}
+
+has_value() {
+  local file="$1" key="$2"
+  grep -Eq "^${key}=.+" "$file" && ! grep -Eq "^${key}=(your-|https://your-)" "$file"
+}
+
+env_value() {
+  local file="$1" key="$2"
+  sed -n "s/^${key}=//p" "$file" | tail -n 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || { printf 'Missing required command: %s\n' "$1" >&2; return 1; }
+}
+
+doctor() {
+  local require_index="${1:-yes}" failed=0
+  printf 'Checking IntuiLearn...\n'
+  for command in python3.11 node npm curl; do
+    if require_command "$command"; then printf '  ✓ %s\n' "$command"; else failed=1; fi
+  done
+  if [[ -x "$BACKEND/.venv/bin/python" ]]; then printf '  ✓ Python environment\n'; else printf '  ✗ Run ./intuilearn setup (Python environment missing)\n'; failed=1; fi
+  if [[ -d "$FRONTEND/node_modules" ]]; then printf '  ✓ Frontend dependencies\n'; else printf '  ✗ Run ./intuilearn setup (frontend dependencies missing)\n'; failed=1; fi
+  if [[ -f "$BACKEND/.env.local" ]]; then
+    for key in SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_SERVICE_ROLE_KEY GEMINI_API_KEY; do
+      if has_value "$BACKEND/.env.local" "$key"; then printf '  ✓ backend %s\n' "$key"; else printf '  ✗ Set %s in backend/.env.local\n' "$key"; failed=1; fi
+    done
+  else
+    printf '  ✗ Run ./intuilearn setup (backend/.env.local missing)\n'; failed=1
+  fi
+  if [[ -f "$FRONTEND/.env.local" ]]; then
+    for key in VITE_SUPABASE_URL VITE_SUPABASE_ANON_KEY; do
+      if has_value "$FRONTEND/.env.local" "$key"; then printf '  ✓ frontend %s\n' "$key"; else printf '  ✗ Set %s in educrafters-guide/.env.local\n' "$key"; failed=1; fi
+    done
+  else
+    printf '  ✗ Run ./intuilearn setup (educrafters-guide/.env.local missing)\n'; failed=1
+  fi
+  if [[ -f "$BACKEND/.env.local" && -f "$FRONTEND/.env.local" ]] && \
+     has_value "$BACKEND/.env.local" SUPABASE_URL && has_value "$FRONTEND/.env.local" VITE_SUPABASE_URL; then
+    if [[ "$(env_value "$BACKEND/.env.local" SUPABASE_URL)" == "$(env_value "$FRONTEND/.env.local" VITE_SUPABASE_URL)" ]]; then
+      printf '  ✓ Frontend and backend use the same Supabase project\n'
+    else
+      printf '  ✗ Supabase project URLs differ between the two environment files\n'; failed=1
+    fi
+    if has_value "$BACKEND/.env.local" SUPABASE_ANON_KEY && has_value "$FRONTEND/.env.local" VITE_SUPABASE_ANON_KEY && \
+       [[ "$(env_value "$BACKEND/.env.local" SUPABASE_ANON_KEY)" == "$(env_value "$FRONTEND/.env.local" VITE_SUPABASE_ANON_KEY)" ]]; then
+      printf '  ✓ Frontend and backend use the same publishable key\n'
+    else
+      printf '  ✗ Supabase publishable keys differ between the two environment files\n'; failed=1
+    fi
+  fi
+  if [[ -f "$BACKEND/data/1/current.json" ]]; then
+    printf '  ✓ Demo course index\n'
+  elif [[ "$require_index" == 'yes' ]]; then
+    printf '  ✗ Run ./intuilearn ingest after configuring Supabase\n'; failed=1
+  else
+    printf '  · Demo course index will be created now\n'
+  fi
+  if (( failed )); then
+    printf '\nLive mode needs attention. The credential-free suite remains available with ./intuilearn e2e.\n' >&2
+    return 1
+  fi
+  printf '\nReady. Run ./intuilearn start and open http://127.0.0.1:8085\n'
+}
+
+setup() {
+  require_command python3.11
+  require_command npm
+  if [[ ! -x "$BACKEND/.venv/bin/python" ]]; then python3.11 -m venv "$BACKEND/.venv"; fi
+  "$BACKEND/.venv/bin/python" -m pip install -r "$BACKEND/requirements.txt"
+  (cd "$FRONTEND" && npm ci && npx playwright install chromium)
+  if [[ ! -f "$BACKEND/.env.local" ]]; then cp "$BACKEND/.env.example" "$BACKEND/.env.local"; fi
+  if [[ ! -f "$FRONTEND/.env.local" ]]; then cp "$FRONTEND/.env.example" "$FRONTEND/.env.local"; fi
+  printf '\nSetup complete. Run ./intuilearn configure to save fresh project values.\n'
+}
+
+configure() {
+  local supabase_url anon_key service_key gemini_key model demo_ai="${INTUILEARN_DEMO_AI:-0}"
+  printf 'Use a fresh Supabase project. Input is written only to ignored .env.local files.\n\n'
+  read -r -p 'Supabase project URL: ' supabase_url
+  read -r -p 'Supabase publishable/anon key: ' anon_key
+  read -r -s -p 'Supabase service-role key: ' service_key; printf '\n'
+  read -r -s -p 'Gemini API key: ' gemini_key; printf '\n'
+  read -r -p 'Gemini model [gemini-3.8-flash]: ' model
+  model="${model:-gemini-3.8-flash}"
+  if [[ ! "$supabase_url" =~ ^https://[^[:space:]]+$ && ! "$supabase_url" =~ ^http://(127\.0\.0\.1|localhost):[0-9]+$ ]] || \
+     [[ -z "$anon_key" || -z "$service_key" || -z "$gemini_key" ]]; then
+    printf 'Configuration was not saved: enter a valid HTTPS project URL (or local loopback URL) and every key.\n' >&2
+    exit 1
+  fi
+  {
+    printf 'SUPABASE_URL=%s\n' "$supabase_url"
+    printf 'SUPABASE_ANON_KEY=%s\n' "$anon_key"
+    printf 'SUPABASE_SERVICE_ROLE_KEY=%s\n' "$service_key"
+    printf 'GEMINI_API_KEY=%s\n' "$gemini_key"
+    printf 'GEMINI_MODEL=%s\n' "$model"
+    printf 'DEMO_AI=%s\n' "$demo_ai"
+    printf '%s\n' 'ALLOWED_ORIGINS=http://127.0.0.1:8085,http://localhost:8085' 'DATA_DIR=./data' 'CHAT_MIN_SIMILARITY=0.3' 'PROVIDER_TIMEOUT_SECONDS=45'
+  } > "$BACKEND/.env.local"
+  {
+    printf 'VITE_SUPABASE_URL=%s\n' "$supabase_url"
+    printf 'VITE_SUPABASE_ANON_KEY=%s\n' "$anon_key"
+    printf '%s\n' 'VITE_CHAT_API_URL=http://127.0.0.1:5055' 'VITE_QUIZ_API_URL=http://127.0.0.1:5055'
+  } > "$FRONTEND/.env.local"
+  chmod 600 "$BACKEND/.env.local" "$FRONTEND/.env.local"
+  printf '\nConfiguration saved. Apply the schema and seed, then run ./intuilearn ingest.\n'
+}
+
+ingest() {
+  doctor no >/dev/null || { printf 'Configure the fresh project before publishing both indexes.\n' >&2; exit 1; }
+  (cd "$BACKEND" && .venv/bin/python FINAL_PROCESSING.py \
+    --course-dir ../demo/Distributed_Systems \
+    --course-name Distributed_Systems \
+    --course-id 1 \
+    --targets both \
+    --skip-llm)
+}
+
+start() {
+  doctor
+  cleanup() {
+    if [[ -n "${API_PID:-}" ]]; then kill "$API_PID" 2>/dev/null || true; fi
+  }
+  trap cleanup EXIT INT TERM
+  (cd "$BACKEND" && env FLASK_SKIP_DOTENV=1 .venv/bin/flask --app app:create_app run --host 127.0.0.1 --port 5055) &
+  API_PID=$!
+  for _ in {1..30}; do
+    if curl --fail --silent http://127.0.0.1:5055/api/health >/dev/null 2>&1; then break; fi
+    if ! kill -0 "$API_PID" 2>/dev/null; then printf 'The API stopped during startup.\n' >&2; exit 1; fi
+    sleep 0.2
+  done
+  curl --fail --silent http://127.0.0.1:5055/api/health >/dev/null || { printf 'The API did not become ready.\n' >&2; exit 1; }
+  printf '\nIntuiLearn is ready at http://127.0.0.1:8085\nPress Ctrl+C to stop both services.\n\n'
+  (cd "$FRONTEND" && npm run dev -- --host 127.0.0.1 --port 8085 --strictPort)
+}
+
+check() {
+  (cd "$BACKEND" && .venv/bin/python -m pytest -q && .venv/bin/python -m pip check)
+  (cd "$FRONTEND" && npm run typecheck && npm run lint && npm test && npm run build && npm audit --audit-level=moderate && npm run test:e2e)
+}
+
+case "${1:-}" in
+  setup) setup ;;
+  configure) configure ;;
+  doctor) doctor ;;
+  ingest) ingest ;;
+  start) start ;;
+  check) check ;;
+  e2e) (cd "$FRONTEND" && npm run test:e2e) ;;
+  -h|--help|help|'') usage ;;
+  *) printf 'Unknown command: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
+esac
